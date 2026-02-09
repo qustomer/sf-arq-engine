@@ -1,0 +1,591 @@
+"""
+SF–ARQ ENGINE v1.0
+Sistema Decisorio Determinístico - Implementación Completa R0–R8
+Documento fuente: SF–ARQ R0–R8 (CONGELADO)
+Plataforma: Streamlit Cloud
+"""
+
+import streamlit as st
+import json
+import uuid
+import os
+from datetime import datetime
+from dataclasses import dataclass, asdict
+from typing import List, Dict, Optional, Tuple
+
+st.set_page_config(page_title="SF–ARQ v1.0 | R0–R8", page_icon="?", layout="wide")
+
+# CSS
+st.markdown("""
+<style>
+    .arq-header { font-size: 2.2rem; font-weight: 900; color: #1a1a1a; letter-spacing: -0.5px; }
+    .arq-sub { color: #666; font-size: 0.9rem; margin-top: -0.5rem; }
+    .frozen-badge { background: #ff5722; color: white; padding: 0.2rem 0.6rem; border-radius: 0.2rem; font-size: 0.7rem; font-weight: bold; }
+    .rule-r0 { border-left: 4px solid #f44336; padding-left: 0.5rem; background: #ffebee; }
+    .rule-r1 { border-left: 4px solid #e91e63; padding-left: 0.5rem; background: #fce4ec; }
+    .rule-r2 { border-left: 4px solid #9c27b0; padding-left: 0.5rem; background: #f3e5f5; }
+    .rule-r3 { border-left: 4px solid #673ab7; padding-left: 0.5rem; background: #ede7f6; }
+    .rule-r4 { border-left: 4px solid #ff9800; padding-left: 0.5rem; background: #fff3e0; }
+    .rule-r5 { border-left: 4px solid #ff5722; padding-left: 0.5rem; background: #fbe9e7; }
+    .rule-r6 { border-left: 4px solid #4caf50; padding-left: 0.5rem; background: #e8f5e9; font-weight: bold; }
+    .rule-r7 { border-left: 4px solid #2196f3; padding-left: 0.5rem; background: #e3f2fd; }
+    .rule-r8 { border-left: 4px solid #607d8b; padding-left: 0.5rem; background: #eceff1; }
+    .decision-close { color: #f44336; font-weight: bold; font-size: 1.2rem; }
+    .decision-conditional { color: #ff9800; font-weight: bold; font-size: 1.2rem; }
+    .decision-advance { color: #4caf50; font-weight: bold; font-size: 1.2rem; }
+    .test-pass { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 1rem; }
+    .test-fail { background: #ffebee; border-left: 4px solid #f44336; padding: 1rem; }
+    .concession-blocked { background: #ffebee; color: #c62828; padding: 0.5rem; border-radius: 0.2rem; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
+
+# Data directory
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+AUDIT_FILE = os.path.join(DATA_DIR, "audit_log.json")
+
+# Enums cerrados (Fuente Única de Verdad)
+CLIENT_TIER = ["Tier1", "Tier2", "Tier3"]
+COMPLEXITY = ["Low", "Medium", "High"]
+URGENCY = ["Low", "Medium", "High"]
+DECISION_LEVEL = ["Operational", "Managerial", "Executive"]
+
+# Outputs normalizados
+PROPOSAL_TYPE = ["P1", "P2", "P3", "NO_ADVANCE"]
+BUDGET_BAND = ["A", "B", "C", "NONE"]
+CLOSURE_TYPE = ["Explicit", "Conditional", "None"]
+DECISION = ["ADVANCE", "ADVANCE_CONDITIONAL", "CLOSE"]
+
+# R8: Tipos de solicitud que activan protección de valor
+CONCESSION_REQUESTS = ["pilot_free", "price_reduction", "execution_included"]
+
+# Gestor de objeciones (8 tipos)
+OBJECTION_TYPES = ["Value", "Price", "Timing", "InternalTeam", "PilotRequest", "ExamplesRequest", "Execution", "Governance"]
+OBJECTION_RESPONSES = {
+    "Value": "El valor se construye en el diagnóstico, no en la propuesta.",
+    "Price": "La inversión se ajusta al valor generado, no al presupuesto disponible.",
+    "Timing": "El timing se valida en la etapa 3, no en la conversación inicial.",
+    "InternalTeam": "El equipo interno se alinea después del sponsor ejecutivo, no antes.",
+    "PilotRequest": "No hacemos pilotos. Hacemos diagnósticos estratégicos.",
+    "ExamplesRequest": "Los casos se presentan en la reunión de cierre, no antes.",
+    "Execution": "La ejecución es responsabilidad del cliente, nosotros habilitamos.",
+    "Governance": "La gobernanza se define en la propuesta, no en la conversación."
+}
+
+@dataclass
+class ARQDecision:
+    id: str
+    timestamp: str
+    client_name: str
+    client_tier: str
+    complexity: str
+    urgency: str
+    decision_level: str
+    concession_requests: List[str]
+    inputs_valid: bool
+    validation_errors: List[str]
+    rules_evaluated: List[Dict]
+    rules_triggered: List[str]
+    final_rule: str
+    proposal_type: str
+    budget_band: str
+    closure_type: str
+    decision: str
+    concessions_blocked: List[str]
+    
+    def to_dict(self):
+        return asdict(self)
+
+def validate_inputs(client_tier: str, complexity: str, urgency: str, decision_level: str) -> Tuple[bool, List[str]]:
+    """Validador de enums cerrados"""
+    errors = []
+    if client_tier not in CLIENT_TIER:
+        errors.append(f"client_tier '{client_tier}' no válido. Valores: {CLIENT_TIER}")
+    if complexity not in COMPLEXITY:
+        errors.append(f"complexity '{complexity}' no válido. Valores: {COMPLEXITY}")
+    if urgency not in URGENCY:
+        errors.append(f"urgency '{urgency}' no válido. Valores: {URGENCY}")
+    if decision_level not in DECISION_LEVEL:
+        errors.append(f"decision_level '{decision_level}' no válido. Valores: {DECISION_LEVEL}")
+    return (len(errors) == 0, errors)def arq2_engine_full(client_tier: str, complexity: str, urgency: str, 
+                     decision_level: str, concession_requests: List[str]) -> Tuple:
+    """
+    Motor ARQ-2: Implementación EXACTA de R0–R8
+    Orden de evaluación: R0 ? R1 ? R2 ? R3 ? R4 ? R5 ? R6 ? R7 ? R8
+    """
+    
+    rules_evaluated = []
+    rules_triggered = []
+    final_rule = None
+    
+    # Estructura para trazabilidad
+    def log_rule(rule_id: str, condition: str, result: bool, action: str = None):
+        rules_evaluated.append({
+            "rule": rule_id,
+            "condition": condition,
+            "result": result,
+            "action": action
+        })
+        if result and action:
+            rules_triggered.append(f"{rule_id}: {condition} ? {action}")
+    
+    # ========== R0: DESCARTE POR NIVEL DECISORIO INSUFICIENTE ==========
+    r0_condition = decision_level == "Operational"
+    log_rule("R0", "decision_level == Operational", r0_condition, 
+             "CLOSE / NO_ADVANCE / NONE / None" if r0_condition else None)
+    if r0_condition:
+        final_rule = "R0"
+        return process_result("NO_ADVANCE", "NONE", "None", "CLOSE", 
+                          rules_evaluated, rules_triggered, final_rule, concession_requests)
+    
+    # ========== R1: DESCARTE POR TIER NO ESTRATÉGICO ==========
+    r1_condition = client_tier == "Tier3"
+    log_rule("R1", "client_tier == Tier3", r1_condition,
+             "CLOSE / NO_ADVANCE / NONE / None" if r1_condition else None)
+    if r1_condition:
+        final_rule = "R1"
+        return process_result("NO_ADVANCE", "NONE", "None", "CLOSE",
+                          rules_evaluated, rules_triggered, final_rule, concession_requests)
+    
+    # ========== R2: DESCARTE POR BAJA PRIORIDAD ESTRATÉGICA ==========
+    r2_condition = (urgency == "Low" and complexity == "Low")
+    log_rule("R2", "urgency == Low AND complexity == Low", r2_condition,
+             "CLOSE / NO_ADVANCE / NONE / None" if r2_condition else None)
+    if r2_condition:
+        final_rule = "R2"
+        return process_result("NO_ADVANCE", "NONE", "None", "CLOSE",
+                          rules_evaluated, rules_triggered, final_rule, concession_requests)
+    
+    # ========== R3: INSUFICIENCIA DE COMPLEJIDAD REAL ==========
+    r3_condition = (complexity == "Low" and decision_level != "Executive")
+    log_rule("R3", "complexity == Low AND decision_level != Executive", r3_condition,
+             "CLOSE / NO_ADVANCE / NONE / None" if r3_condition else None)
+    if r3_condition:
+        final_rule = "R3"
+        return process_result("NO_ADVANCE", "NONE", "None", "CLOSE",
+                          rules_evaluated, rules_triggered, final_rule, concession_requests)
+    
+    # ========== R4: ACCESO GERENCIAL CON COMPLEJIDAD MEDIA (CONDICIONAL) ==========
+    r4_condition = (client_tier == "Tier1" and complexity == "Medium" and decision_level == "Managerial")
+    log_rule("R4", "Tier1 + Medium + Managerial", r4_condition,
+             "ADVANCE_CONDITIONAL / P1 / B / Explicit" if r4_condition else None)
+    if r4_condition:
+        final_rule = "R4"
+        return process_result("P1", "B", "Explicit", "ADVANCE_CONDITIONAL",
+                          rules_evaluated, rules_triggered, final_rule, concession_requests)
+    
+    # ========== R5: ACCESO GERENCIAL CON ALTA COMPLEJIDAD (CONDICIONAL) ==========
+    r5_condition = (client_tier == "Tier1" and complexity == "High" and decision_level == "Managerial")
+    log_rule("R5", "Tier1 + High + Managerial", r5_condition,
+             "ADVANCE_CONDITIONAL / P1 / B / Explicit" if r5_condition else None)
+    if r5_condition:
+        final_rule = "R5"
+        return process_result("P1", "B", "Explicit", "ADVANCE_CONDITIONAL",
+                          rules_evaluated, rules_triggered, final_rule, concession_requests)
+    
+    # ========== R6: REGLA ESTRATÉGICA PRINCIPAL (CANÓNICA) ==========
+    r6_condition = (client_tier == "Tier1" and complexity in ["Medium", "High"] and decision_level == "Executive")
+    log_rule("R6", "Tier1 + Medium/High + Executive", r6_condition,
+             "ADVANCE / P1 / B / Explicit" if r6_condition else None)
+    if r6_condition:
+        final_rule = "R6"
+        return process_result("P1", "B", "Explicit", "ADVANCE",
+                          rules_evaluated, rules_triggered, final_rule, concession_requests)
+    
+    # ========== R7: OBLIGATORIEDAD DE CIERRE EXPLÍCITO ==========
+    # Nota: R7 es post-procesamiento, se aplica después de R4/R5/R6
+    # Ya está implícito en los returns de R4/R5/R6 (Explicit)
+    log_rule("R7", "decision IN [ADVANCE, ADVANCE_CONDITIONAL]", False, None)
+    
+    # ========== R8: PROTECCIÓN DE VALOR (NO CONCESIONES) ==========
+    # Nota: R8 no altera la decisión, solo bloquea concesiones
+    # Se procesa en process_result()
+    
+    # DEFAULT: Si no califica para ninguna regla
+    log_rule("DEFAULT", "No cumple ninguna regla", True, "CLOSE / NO_ADVANCE / NONE / None")
+    final_rule = "DEFAULT"
+    return process_result("NO_ADVANCE", "NONE", "None", "CLOSE",
+                      rules_evaluated, rules_triggered, final_rule, concession_requests)
+
+def process_result(proposal_type: str, budget_band: str, closure_type: str, 
+                   decision: str, rules_evaluated: List[Dict], rules_triggered: List[str],
+                   final_rule: str, concession_requests: List[str]) -> Tuple:
+    """Procesa resultado final aplicando R7 y R8"""
+    
+    # R7: Asegurar cierre explícito si hay avance
+    if decision in ["ADVANCE", "ADVANCE_CONDITIONAL"] and closure_type != "Explicit":
+        closure_type = "Explicit"
+        # Actualizar en rules_evaluated si existe R7
+        for r in rules_evaluated:
+            if r["rule"] == "R7":
+                r["result"] = True
+                r["action"] = "closure_type = Explicit"
+    
+    # R8: Bloquear concesiones (no altera decisión)
+    concessions_blocked = []
+    if concession_requests:
+        for req in concession_requests:
+            if req in CONCESSION_REQUESTS:
+                concessions_blocked.append(req)
+    
+    return (proposal_type, budget_band, closure_type, decision, 
+            rules_evaluated, rules_triggered, final_rule, concessions_blocked)
+
+def handle_objection(objection_type: str) -> str:
+    """Gestor de objeciones - 8 tipos, respuesta única predefinida"""
+    if objection_type not in OBJECTION_TYPES:
+        return f"ERROR_INVALID_OBJECTION: '{objection_type}' no válido. Tipos: {OBJECTION_TYPES}"
+    return OBJECTION_RESPONSES[objection_type]
+
+def log_decision(decision: ARQDecision):
+    """Persistencia de audit log en JSON"""
+    logs = []
+    if os.path.exists(AUDIT_FILE):
+        with open(AUDIT_FILE, 'r', encoding='utf-8') as f:
+            try:
+                logs = json.load(f)
+            except:
+                logs = []
+    logs.append(decision.to_dict())
+    with open(AUDIT_FILE, 'w', encoding='utf-8') as f:
+        json.dump(logs, f, indent=2, ensure_ascii=False)
+
+def load_audit_logs() -> List[Dict]:
+    """Carga historial de decisiones"""
+    if not os.path.exists(AUDIT_FILE):
+        return []
+    with open(AUDIT_FILE, 'r', encoding='utf-8') as f:
+        try:
+            return json.load(f)
+        except:
+            return []def run_test_cases_full() -> List[Dict]:
+    """
+    Casos de test oficiales del documento:
+    - Lundin ? R6 + R7
+    - Barrick ? R4 + R7  
+    - POSCO ? R0 o R2 (según inputs)
+    """
+    tests = [
+        {
+            "name": "TC-ARQ-001 — LUNDIN (R6 + R7)",
+            "client_name": "Lundin Mining",
+            "inputs": {
+                "client_tier": "Tier1",
+                "complexity": "High",
+                "urgency": "Medium",
+                "decision_level": "Executive",
+                "concession_requests": []
+            },
+            "expected": {
+                "decision": "ADVANCE",
+                "proposal_type": "P1",
+                "budget_band": "B",
+                "closure_type": "Explicit",
+                "final_rule": "R6"
+            }
+        },
+        {
+            "name": "TC-ARQ-002 — BARRICK (R4 + R7)",
+            "client_name": "Barrick Gold",
+            "inputs": {
+                "client_tier": "Tier1",
+                "complexity": "Medium",
+                "urgency": "High",
+                "decision_level": "Managerial",
+                "concession_requests": ["price_reduction"]
+            },
+            "expected": {
+                "decision": "ADVANCE_CONDITIONAL",
+                "proposal_type": "P1",
+                "budget_band": "B",
+                "closure_type": "Explicit",
+                "final_rule": "R4",
+                "concessions_blocked": ["price_reduction"]
+            }
+        },
+        {
+            "name": "TC-ARQ-003 — POSCO (R0)",
+            "client_name": "POSCO",
+            "inputs": {
+                "client_tier": "Tier1",
+                "complexity": "Medium",
+                "urgency": "High",
+                "decision_level": "Operational",
+                "concession_requests": ["pilot_free"]
+            },
+            "expected": {
+                "decision": "CLOSE",
+                "proposal_type": "NO_ADVANCE",
+                "budget_band": "NONE",
+                "closure_type": "None",
+                "final_rule": "R0",
+                "concessions_blocked": ["pilot_free"]
+            }
+        },
+        {
+            "name": "TC-ARQ-004 — R2 Test (Low/Low)",
+            "client_name": "Test R2",
+            "inputs": {
+                "client_tier": "Tier1",
+                "complexity": "Low",
+                "urgency": "Low",
+                "decision_level": "Executive",
+                "concession_requests": []
+            },
+            "expected": {
+                "decision": "CLOSE",
+                "proposal_type": "NO_ADVANCE",
+                "budget_band": "NONE",
+                "closure_type": "None",
+                "final_rule": "R2"
+            }
+        },
+        {
+            "name": "TC-ARQ-005 — R1 Test (Tier3)",
+            "client_name": "Test Tier3",
+            "inputs": {
+                "client_tier": "Tier3",
+                "complexity": "High",
+                "urgency": "High",
+                "decision_level": "Executive",
+                "concession_requests": []
+            },
+            "expected": {
+                "decision": "CLOSE",
+                "proposal_type": "NO_ADVANCE",
+                "budget_band": "NONE",
+                "closure_type": "None",
+                "final_rule": "R1"
+            }
+        }
+    ]
+    
+    results = []
+    for test in tests:
+        prop, budg, clos, dec, rules_eval, rules_trig, final_rule, concessions = arq2_engine_full(
+            test["inputs"]["client_tier"],
+            test["inputs"]["complexity"],
+            test["inputs"]["urgency"],
+            test["inputs"]["decision_level"],
+            test["inputs"]["concession_requests"]
+        )
+        
+        passed = (
+            prop == test["expected"]["proposal_type"] and
+            budg == test["expected"]["budget_band"] and
+            clos == test["expected"]["closure_type"] and
+            dec == test["expected"]["decision"] and
+            final_rule == test["expected"]["final_rule"]
+        )
+        
+        # Verificar R8 si aplica
+        if "concessions_blocked" in test["expected"]:
+            passed = passed and (concessions == test["expected"]["concessions_blocked"])
+        
+        results.append({
+            "name": test["name"],
+            "passed": passed,
+            "expected": test["expected"],
+            "got": {
+                "proposal_type": prop,
+                "budget_band": budg,
+                "closure_type": clos,
+                "decision": dec,
+                "final_rule": final_rule,
+                "concessions_blocked": concessions
+            },
+            "rules_triggered": rules_trig,
+            "rules_evaluated": rules_eval
+        })
+    
+    return results
+
+def main():
+    """UI Streamlit completa"""
+    # Header
+    st.markdown('<p class="arq-header">? SF–ARQ ENGINE v1.0</p>', unsafe_allow_html=True)
+    st.markdown('<p class="arq-sub">Sistema Decisorio Determinístico | <span class="frozen-badge">CONGELADO</span> | Documento R0–R8</p>', unsafe_allow_html=True)
+    
+    # Tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["?? Nueva Decisión", "?? Casos de Test (Contrato)", "?? Gestor de Objeciones", "?? Auditoría"])
+    
+    # ========== TAB 1: NUEVA DECISIÓN ==========
+    with tab1:
+        st.header("Input Validator")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            client_name = st.text_input("Nombre del Cliente *", placeholder="Ej: Minera Aurora")
+            client_tier = st.selectbox("Client Tier *", [""] + CLIENT_TIER, format_func=lambda x: "Seleccionar..." if x == "" else x)
+            complexity = st.selectbox("Complexity *", [""] + COMPLEXITY, format_func=lambda x: "Seleccionar..." if x == "" else x)
+        
+        with col2:
+            urgency = st.selectbox("Urgency *", [""] + URGENCY, format_func=lambda x: "Seleccionar..." if x == "" else x)
+            decision_level = st.selectbox("Decision Level *", [""] + DECISION_LEVEL, format_func=lambda x: "Seleccionar..." if x == "" else x)
+        
+        # R8: Concesiones
+        st.subheader("Solicitudes de Concesión (R8)")
+        st.caption("Seleccionar todas las que apliquen:")
+        col_c1, col_c2, col_c3 = st.columns(3)
+        concession_requests = []
+        with col_c1:
+            if st.checkbox("Piloto gratuito", key="pilot"):
+                concession_requests.append("pilot_free")
+        with col_c2:
+            if st.checkbox("Reducción de precio", key="price"):
+                concession_requests.append("price_reduction")
+        with col_c3:
+            if st.checkbox("Ejecución incluida", key="exec"):
+                concession_requests.append("execution_included")
+        
+        # Validación
+        if "" in [client_tier, complexity, urgency, decision_level]:
+            st.warning("?? Completar todos los campos obligatorios (*)")
+        else:
+            valid, errors = validate_inputs(client_tier, complexity, urgency, decision_level)
+            
+            if not valid:
+                st.error("? ERROR_VALIDATION_FAILED")
+                for err in errors:
+                    st.caption(f"• {err}")
+            else:
+                st.success("? Inputs válidos - Enums cerrados verificados")
+                
+                if st.button("?? EJECUTAR MOTOR ARQ-2 (R0?R8)", type="primary", use_container_width=True):
+                    prop, budg, clos, dec, rules_eval, rules_trig, final_rule, concessions = arq2_engine_full(
+                        client_tier, complexity, urgency, decision_level, concession_requests
+                    )
+                    
+                    # Mostrar evaluación de reglas
+                    st.subheader("Evaluación Secuencial R0?R8")
+                    for rule in rules_eval:
+                        rule_class = f"rule-{rule['rule'].lower()}" if rule['rule'].startswith('R') else ""
+                        result_icon = "?" if rule['result'] else "?"
+                        st.markdown(f'<div class="{rule_class}">{result_icon} <b>{rule["rule"]}</b>: {rule["condition"]}</div>', 
+                                  unsafe_allow_html=True)
+                        if rule['action']:
+                            st.caption(f"   ? {rule['action']}")
+                    
+                    # Resultado final
+                    st.subheader("Output Normalizado")
+                    
+                    cols = st.columns(4)
+                    outputs = [
+                        ("Proposal Type", prop),
+                        ("Budget Band", budg),
+                        ("Closure Type", clos),
+                        ("Decisión", dec)
+                    ]
+                    
+                    for i, (label, value) in enumerate(outputs):
+                        with cols[i]:
+                            if label == "Decisión":
+                                if value == "ADVANCE":
+                                    st.markdown(f'<p class="decision-advance">?? {value}</p>', unsafe_allow_html=True)
+                                elif value == "ADVANCE_CONDITIONAL":
+                                    st.markdown(f'<p class="decision-conditional">?? {value}</p>', unsafe_allow_html=True)
+                                else:
+                                    st.markdown(f'<p class="decision-close">?? {value}</p>', unsafe_allow_html=True)
+                            else:
+                                st.metric(label, value)
+                    
+                    # R8: Concesiones bloqueadas
+                    if concessions:
+                        st.markdown('<p class="concession-blocked">?? R8 ACTIVADO: Concesiones bloqueadas - ' + 
+                                  ', '.join(concessions) + '</p>', unsafe_allow_html=True)
+                    
+                    # Regla final
+                    st.info(f"**Regla Final:** `{final_rule}`")
+                    
+                    # Persistir
+                    decision = ARQDecision(
+                        id=str(uuid.uuid4()),
+                        timestamp=datetime.now().isoformat(),
+                        client_name=client_name or "Sin nombre",
+                        client_tier=client_tier,
+                        complexity=complexity,
+                        urgency=urgency,
+                        decision_level=decision_level,
+                        concession_requests=concession_requests,
+                        inputs_valid=True,
+                        validation_errors=[],
+                        rules_evaluated=rules_eval,
+                        rules_triggered=rules_trig,
+                        final_rule=final_rule,
+                        proposal_type=prop,
+                        budget_band=budg,
+                        closure_type=clos,
+                        decision=dec,
+                        concessions_blocked=concessions
+                    )
+                    log_decision(decision)
+                    st.success("? Decisión auditada y persistida en JSON")
+    
+    # ========== TAB 2: CASOS DE TEST ==========
+    with tab2:
+        st.header("Casos de Test Oficiales")
+        st.markdown('<div style="background:#fff3e0;padding:0.5rem;border-radius:0.2rem;border-left:3px solid #ff9800;">' +
+                   '<b>CONTRATO DE SISTEMA:</b> Si el sistema no reproduce EXACTAMENTE estos resultados, ' +
+                   'la implementación está incorrecta.</div>', unsafe_allow_html=True)
+        
+        if st.button("?? EJECUTAR TODOS LOS TESTS", use_container_width=True):
+            results = run_test_cases_full()
+            
+            all_passed = True
+            for res in results:
+                with st.expander(f"{'?' if res['passed'] else '?'} {res['name']}", expanded=not res['passed']):
+                    if res['passed']:
+                        st.markdown('<div class="test-pass"><b>TEST PASSED</b></div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown('<div class="test-fail"><b>TEST FAILED</b> - Revisar implementación</div>', unsafe_allow_html=True)
+                        all_passed = False
+                    
+                    col_exp, col_got = st.columns(2)
+                    with col_exp:
+                        st.caption("Expected:")
+                        st.json(res['expected'])
+                    with col_got:
+                        st.caption("Got:")
+                        st.json(res['got'])
+                    
+                    st.caption("Rules triggered:")
+                    for r in res['rules_triggered']:
+                        st.text(f"  ? {r}")
+            
+            if all_passed:
+                st.balloons()
+                st.success("?? CRITERIO DE ACEPTACIÓN: Todos los tests pasaron. Sistema correctamente implementado.")
+            else:
+                st.error("?? CRITERIO DE ACEPTACIÓN FALLIDO")
+    
+    # ========== TAB 3: GESTOR DE OBJECIONES ==========
+    with tab3:
+        st.header("Gestor de Objeciones")
+        st.caption("8 tipos soportados. UNA única respuesta predefinida por tipo. No texto libre.")
+        
+        objection = st.selectbox("Seleccionar tipo de objeción", OBJECTION_TYPES)
+        
+        if st.button("GENERAR RESPUESTA PREDEFINIDA", use_container_width=True):
+            response = handle_objection(objection)
+            st.markdown(f"**Tipo:** `{objection}`")
+            st.info(f"**Respuesta:** {response}")
+            st.caption("Esta respuesta es la ÚNICA permitida para este tipo de objeción (Fuente Única de Verdad).")
+    
+    # ========== TAB 4: AUDITORÍA ==========
+    with tab4:
+        st.header("Audit Log Completo")
+        st.caption("Trazabilidad total: timestamp, inputs, reglas evaluadas, reglas triggered, outputs, concesiones bloqueadas")
+        
+        logs = load_audit_logs()
+        
+        if not logs:
+            st.info("No hay decisiones registradas")
+        else:
+            st.metric("Total decisiones auditadas", len(logs))
+            
+            for log in reversed(logs[-10:]):
+                with st.expander(f"{log['timestamp'][:19]} | {log['client_name']} | {log['decision']} | {log['final_rule']}"):
+                    st.json(log)
+
+if __name__ == "__main__":
+    main()
